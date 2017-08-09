@@ -2,7 +2,7 @@
 
 use Mojolicious::Lite;
 use Device::BCM2835;
-use strict;
+use JSON::Parse 'parse_json';
 
 my $config = plugin 'Config';
 
@@ -30,31 +30,43 @@ get '/' => sub {
 	my $output=readAllPins();	
 	$c->render(json => $output);
 };
-get '/on/:pinNumber' => [pinNumber => qr/\d+/] => sub {
-	my $c = shift;
-	my $pinNumber = $c->param('pinNumber');
+
+# Local system routes
+get '/:operation/:pinNumber' => [operation => ['on', 'off'], pinNumber => qr/\d+/] => sub {
+        my $c = shift;
+        my $pinNumber = $c->param('pinNumber');
+        my $operation = $c->param('operation');
 
 	# Check that the pinNumber is valid and throw a 500 error if not
-	return $c->reply->exception("Error: The pin number $pinNumber is not available") 
+	return $c->reply->exception("Error: The pin number $pinNumber is not available")
 		unless ($pinNames[$pinNumber]);
-
+	
 	setPinAsOutput($pinNumber);
-	pinH($pinNumber);
-	my $output=readAllPins();	
+	if ($operation eq "on") {
+		pinH($pinNumber);
+	} else {
+		pinL($pinNumber);
+	}
+	my $output=readAllPins();
 	$c->render(json => $output);
 };
 
-get '/off/:pinNumber' => [pinNumber => qr/\d+/] => sub {
+# Remote system routes
+get '/remote/:remoteName/:operation/:pinNumber' => [operation => ['on', 'off'], pinNumber => qr/\d+/] => sub {
 	my $c = shift;
-	my $pinNumber = $c->param('pinNumber');
+	my $remoteName = $c->param('remoteName');
+	my $operation = $c->param('operation');
+        my $pinNumber = $c->param('pinNumber');
 
-	# Check that the pinNumber is valid and throw a 500 error if not
-	return $c->reply->exception("Error: The pin number $pinNumber is not available") 
-		unless ($pinNames[$pinNumber]);
-
-	setPinAsOutput($pinNumber);
-	pinL($pinNumber);
-	my $output=readAllPins();	
+	# Check that the remoteName is valid and throw a 500 error if not
+        return $c->reply->exception("Error: The remote system $remoteName is not available")
+		unless($config->{remoteSystems}->{$remoteName});
+        if ($operation eq "on") {
+		remotePinH($remoteName,$pinNumber);
+        } else {
+		remotePinL($remoteName,$pinNumber);
+        }
+	my $output=readAllRemotePins($remoteName);
 	$c->render(json => $output);
 };
 
@@ -118,6 +130,34 @@ sub readAllPins {
 	return \@output;
 }
 
+sub readAllRemotePins {
+	my $remoteName = shift;
+	my $remoteAddress = $config->{remoteSystems}->{$remoteName}->{address};
+	my $remoteUrl = $remoteAddress;
+	my $output = `curl -s $remoteUrl`;
+	my $jsonOutput = parse_json($output);
+	return $jsonOutput;
+}
+
+sub remotePinH {
+	my $remoteName=shift;
+	my $pinNumber=shift;
+ 	my $remoteAddress = $config->{remoteSystems}->{$remoteName}->{address};
+	my $remoteUrl = $remoteAddress.'/on/'.$pinNumber;
+	my $output = `curl -s $remoteUrl`;
+	return;
+}
+
+
+sub remotePinL {
+	my $remoteName=shift;
+	my $pinNumber=shift;
+ 	my $remoteAddress = $config->{remoteSystems}->{$remoteName}->{address};
+	my $remoteUrl = $remoteAddress.'/off/'.$pinNumber;
+	my $output = `curl -s $remoteUrl`;
+	return;
+}
+
 sub allPinsOn {
 	for(1..8) {
 		setPinAsOutput($_);
@@ -137,14 +177,12 @@ sub allPinsOff {
 sub setPinAsOutput {
 	my $pinNumber=shift;
 	my $pinName=$pinNames[$pinNumber];
-	warn $pinName;
 	Device::BCM2835::gpio_fsel(eval('&Device::BCM2835::'.$pinName),&Device::BCM2835::BCM2835_GPIO_FSEL_OUTP);
 	return;	
 }
 sub setPinAsInput {
 	my $pinNumber=shift;
 	my $pinName=$pinNames[$pinNumber];
-	warn $pinName;
 	Device::BCM2835::gpio_fsel(eval('&Device::BCM2835::'.$pinName),&Device::BCM2835::BCM2835_GPIO_FSEL_INPT);
 	return;	
 }
