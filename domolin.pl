@@ -3,6 +3,7 @@
 use Mojolicious::Lite;
 use Device::BCM2835;
 use JSON::Parse 'parse_json';
+use WWW::Curl::Easy;
 
 my $config = plugin 'Config';
 
@@ -14,11 +15,7 @@ my @pinNames=(undef,
  "RPI_GPIO_P1_16", "RPI_GPIO_P1_18",
  "RPI_GPIO_P1_22", "RPI_GPIO_P1_07");
 
-sub startup {
-	my $c = shift;
-	$c->plugin('Config');
-}
-
+app->plugin('Config');
 
 get '/' => sub {
 	my $c = shift;
@@ -27,11 +24,13 @@ get '/' => sub {
 	#	 
  	my $authToken = $c->req->headers->{headers}->{'auth-token'}[0];
  
-	my $output=readAllPins();	
-	$c->render(json => $output);
+	$c->render(text => "");
 };
 
+
+#############################
 # Local system routes
+#############################
 get '/:operation/:pinNumber' => [operation => ['on', 'off'], pinNumber => qr/\d+/] => sub {
         my $c = shift;
         my $pinNumber = $c->param('pinNumber');
@@ -51,25 +50,6 @@ get '/:operation/:pinNumber' => [operation => ['on', 'off'], pinNumber => qr/\d+
 	$c->render(json => $output);
 };
 
-# Remote system routes
-get '/remote/:remoteName/:operation/:pinNumber' => [operation => ['on', 'off'], pinNumber => qr/\d+/] => sub {
-	my $c = shift;
-	my $remoteName = $c->param('remoteName');
-	my $operation = $c->param('operation');
-        my $pinNumber = $c->param('pinNumber');
-
-	# Check that the remoteName is valid and throw a 500 error if not
-        return $c->reply->exception("Error: The remote system $remoteName is not available")
-		unless($config->{remoteSystems}->{$remoteName});
-        if ($operation eq "on") {
-		remotePinH($remoteName,$pinNumber);
-        } else {
-		remotePinL($remoteName,$pinNumber);
-        }
-	my $output=readAllRemotePins($remoteName);
-	$c->render(json => $output);
-};
-
 get '/allOn' => sub {
 	my $c = shift;
 	allPinsOn();
@@ -86,8 +66,41 @@ get '/allOff' => sub {
 
 get '/info' => sub {
 	my $c = shift;
-	$c->render("info");		
+	my $infoOutput;
+	$infoOutput->{localSystem}=$config->{localSystem};
+	$infoOutput->{remoteSystems}=$config->{remoteSystems};
+	$c->respond_to(
+	     json => {json => $infoOutput},
+	     html => {template => "info", infoOutput => $infoOutput},
+	);
 };
+
+
+#############################
+# Remote system routes
+#############################
+get '/remote/:remoteName/:operation/:pinNumber' => [operation => ['on', 'off'], pinNumber => qr/\d+/] => sub {
+	my $c = shift;
+	my $remoteName = $c->param('remoteName');
+	my $operation = $c->param('operation');
+        my $pinNumber = $c->param('pinNumber');
+
+	# Check that the remoteName is valid and throw a 500 error if not
+        return $c->reply->exception("Error: The remote system $remoteName is not available")
+		unless($config->{remoteSystems}->{$remoteName});
+	
+	my ($result,$output);
+        if ($operation eq "on") {
+		($result,$output)=remotePinH($remoteName,$pinNumber);
+        } else {
+		($result,$output)=remotePinL($remoteName,$pinNumber);
+        }
+	# Return a 500 error if the remote request did not go well
+	return $c->reply->exception($output)
+		unless($result==0);
+	$c->render(json => $output);
+};
+
 
 app->start;
 
@@ -134,9 +147,29 @@ sub readAllRemotePins {
 	my $remoteName = shift;
 	my $remoteAddress = $config->{remoteSystems}->{$remoteName}->{address};
 	my $remoteUrl = $remoteAddress;
-	my $output = `curl -s $remoteUrl`;
-	my $jsonOutput = parse_json($output);
-	return $jsonOutput;
+	
+	my $responseBody;
+
+	my $curl = WWW::Curl::Easy->new;
+	$curl->setopt(CURLOPT_URL, $remoteUrl);
+	$curl->setopt(CURLOPT_WRITEDATA,\$responseBody);
+
+	my $retCode = $curl->perform;
+	my $responseCode = $curl->getinfo(CURLINFO_HTTP_CODE);
+
+	# Error checking
+	return(1,"Error in remote system $remoteName: $retCode ".$curl->strerror($retCode))
+		unless ($retCode == 0);
+
+	return(1,"Error in remote system $remoteName: $responseCode ")
+		unless ($responseCode == 200);
+
+	return(1,"Error in remote system $remoteName: No valid response ")
+		unless ($responseBody ne "");
+
+	# All clean, no errors, return the json
+	my $jsonOutput = parse_json($responseBody);
+	return (0,$jsonOutput);
 }
 
 sub remotePinH {
@@ -144,8 +177,28 @@ sub remotePinH {
 	my $pinNumber=shift;
  	my $remoteAddress = $config->{remoteSystems}->{$remoteName}->{address};
 	my $remoteUrl = $remoteAddress.'/on/'.$pinNumber;
-	my $output = `curl -s $remoteUrl`;
-	return;
+	my $responseBody;
+
+	my $curl = WWW::Curl::Easy->new;
+	$curl->setopt(CURLOPT_URL, $remoteUrl);
+	$curl->setopt(CURLOPT_WRITEDATA,\$responseBody);
+
+	my $retCode = $curl->perform;
+	my $responseCode = $curl->getinfo(CURLINFO_HTTP_CODE);
+
+	# Error checking
+	return(1,"Error in remote system $remoteName: $retCode ".$curl->strerror($retCode))
+		unless ($retCode == 0);
+
+	return(1,"Error in remote system $remoteName: $responseCode ")
+		unless ($responseCode == 200);
+
+	return(1,"Error in remote system $remoteName: No valid response ")
+		unless ($responseBody ne "");
+
+	# All clean, no errors, return the json
+	my $jsonOutput = parse_json($responseBody);
+	return (0,$jsonOutput);
 }
 
 
@@ -154,8 +207,28 @@ sub remotePinL {
 	my $pinNumber=shift;
  	my $remoteAddress = $config->{remoteSystems}->{$remoteName}->{address};
 	my $remoteUrl = $remoteAddress.'/off/'.$pinNumber;
-	my $output = `curl -s $remoteUrl`;
-	return;
+	my $responseBody;
+
+	my $curl = WWW::Curl::Easy->new;
+	$curl->setopt(CURLOPT_URL, $remoteUrl);
+	$curl->setopt(CURLOPT_WRITEDATA,\$responseBody);
+
+	my $retCode = $curl->perform;
+	my $responseCode = $curl->getinfo(CURLINFO_HTTP_CODE);
+
+	# Error checking
+	return(1,"Error in remote system $remoteName: $retCode ".$curl->strerror($retCode))
+		unless ($retCode == 0);
+
+	return(1,"Error in remote system $remoteName: $responseCode ")
+		unless ($responseCode == 200);
+
+	return(1,"Error in remote system $remoteName: No valid response ")
+		unless ($responseBody ne "");
+
+	# All clean, no errors, return the json
+	my $jsonOutput = parse_json($responseBody);
+	return (0,$jsonOutput);
 }
 
 sub allPinsOn {
@@ -217,6 +290,13 @@ __DATA__
   <style>* { font-family:Arial}</style>
   <body>
     <h1>Domolín Application Info</h1>
-    <pre><%= dumper $config %></pre>
+    <h2>LocalSystem</h2>
+    <pre>
+    <%= dumper $infoOutput->{localSystem} %>
+    </pre>
+    <h2>RemoteSystem</h2>
+    <pre>
+    <%= dumper $infoOutput->{remoteSystems} %>
+    </pre>
   </body>
 </html>

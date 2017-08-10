@@ -9,4 +9,7 @@ To install Mojolicious with all its dependencies run:
 
 It is recommended to run it under a different perl installation. For this, please use perlbrew https://perlbrew.pl/
 
+sudo apt-get install libwww-curl-perl
+sudo apt-get install libcurl4-openssl-dev
+cpanm WWW::Curl::Easy -v
 
