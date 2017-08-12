@@ -1,0 +1,236 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Control de Iluminación</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<meta charset="utf-8" />
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
+<script>
+
+var mainUrl="http://192.168.1.17:3000";
+var wsUrl="ws://192.168.1.17:3000/realTime";
+
+var onlineStatus= false;
+
+$(function(){
+	loadStatus();
+	ws(wsUrl);
+	
+	$('#connectionStatus').click(function() {
+		if (onlineStatus == false) 	ws(wsUrl);
+	});
+});
+
+
+function ws(url){
+	var ws = new WebSocket( url );
+	ws.onopen = function() {
+		$('#connectionStatus').show();
+		$('#connectionStatusOnline').show();
+		$('#connectionStatusOffline').hide();
+		ws.send("open");
+		onlineStatus=true;
+    };
+	ws.onclose = function() {
+		$('#connectionStatus').show();
+		$('#connectionStatusOnline').hide();
+		$('#connectionStatusOffline').show();
+		onlineStatus=false;
+    };
+	ws.onmessage = function(e){
+		if (document.location.href.indexOf("debug")!=-1) {
+			$("#debugDiv").show();
+			$("#debugDiv").html(e.data +  "</br>"+ $("#debugDiv").html() );
+		}
+		var data = JSON.parse(e.data);
+		changeSwitchWs(data);
+	};
+}
+
+function changeSwitchWs(switchDetails){
+	for (systemName in switchDetails) {
+		var systemObj = switchDetails[systemName];
+		for (pinNumber in systemObj) {
+			var switchObj = systemObj[pinNumber];
+			var switchId = systemName + "_switch" + pinNumber;
+			console.log(switchId + " " + switchObj.status);
+			if (switchObj.status) {
+				$("#" + switchId).prop('checked',true);
+			} else {
+				$("#" + switchId).prop('checked',false);		
+			}
+		}
+	}
+}
+
+function loadStatus() {
+	var url=mainUrl+"/statusAll"; 
+	$.ajax({
+		type: 'GET',
+		url: url,
+		dataType: 'json',
+		success: function(data){
+			drawSwitches(data);
+		},
+		error: function(data){
+		},
+		complete: function() {
+		}
+	});
+}
+
+function drawSwitches(switchesStatus) {
+	var url=mainUrl+"/info.json"; 
+	$.ajax({
+		type: 'GET',
+		url: url,
+		dataType: 'json',
+		success: function(data){
+			for (switchName in data.localSystem.switches){
+				data.localSystem.switches[switchName].system="local";
+				var pinNumber = data.localSystem.switches[switchName].pin
+				makeSwitch(data.localSystem.switches[switchName],switchesStatus.local[pinNumber].status);
+			} 
+			for (remoteSystem in data.remoteSystems){
+				var remoteSystemObj = data.remoteSystems[remoteSystem];
+				for (switchName in remoteSystemObj.switches){
+					remoteSystemObj.switches[switchName].system=remoteSystem;
+					var pinNumber = remoteSystemObj.switches[switchName].pin
+					makeSwitch(remoteSystemObj.switches[switchName],switchesStatus[remoteSystem][pinNumber].status);
+				} 
+			} 
+		},
+		error: function(data){
+			alert("Ha habido un error");
+		},
+		complete: function() {
+		}
+	});
+}
+
+function makeSwitch(switchDetails,pinStatus) {
+	var name = switchDetails.name;
+	var pin = switchDetails.pin;
+	var system = switchDetails.system;
+	var checked="";
+	if (pinStatus==1) checked="checked";	
+	$("#switchesContainer").append(`
+			<h2>${name}</h2>
+			<div class="onoffswitch" align="left">
+				<input type="checkbox" name="onoffswitch${name}" class="onoffswitch-checkbox" data-system="${system}" data-pinNumber="${pin}" id="${system}_switch${pin}" onChange="changeSwitch('${system}','${pin}','${system}_switch${pin}')" ${checked}>
+			<label class="onoffswitch-label" for="${system}_switch${pin}">
+			<span class="onoffswitch-inner"></span>
+			<span class="onoffswitch-switch"></span>
+			</label>
+			</div>
+	
+	`);	
+}
+
+function changeSwitch(system,pinNumber,switchId) {
+	var pinStatus = $("#" + switchId).prop('checked');
+	var action='off/';
+	var remote='/';
+
+	if (pinStatus) action = 'on/';
+	if (system != 'local') remote = '/remote/' + system + '/';
+
+	var url=mainUrl + remote + action + pinNumber; 
+	$.ajax({
+		type: 'GET',
+		url: url,
+		dataType: 'json',
+		success: function(data){
+//			console.log(data);
+		},
+		error: function(data){
+//			console.log(data);
+		},
+		complete: function() {
+		}
+	});
+	if (onlineStatus == false) 	ws(wsUrl);
+}
+
+</script>
+<style>
+.onoffswitch {
+	position: relative; width: 200px;
+	-webkit-user-select:none; -moz-user-select:none; -ms-user-select: none;
+}
+.onoffswitch-checkbox {
+	display: none;
+}
+.onoffswitch-label {
+	display: block; overflow: hidden; cursor: pointer;
+	border: 2px solid #444444; border-radius: 32px;
+}
+.onoffswitch-inner {
+	display: block; width: 200%; margin-left: -100%;
+	-moz-transition: margin 0.3s ease-in 0s; -webkit-transition: margin 0.3s ease-in 0s;
+	-o-transition: margin 0.3s ease-in 0s; transition: margin 0.3s ease-in 0s;
+}
+.onoffswitch-inner:before, .onoffswitch-inner:after {
+	display: block; float: left; width: 50%; height: 70px; padding: 0; line-height: 70px;
+	font-size: 18px; color: white; font-family: Trebuchet, Arial, sans-serif; font-weight: bold;
+	-moz-box-sizing: border-box; -webkit-box-sizing: border-box; box-sizing: border-box;
+}
+.onoffswitch-inner:before {
+	content: "ENCENDIDO";
+	padding-left: 10px;
+	background-color: #03A133; color: #FFFFFF;
+}
+.onoffswitch-inner:after {
+	content: "APAGADO";
+	padding-right: 10px;
+	background-color: #EEEEEE; color: #999999;
+	text-align: right;
+}
+.onoffswitch-switch {
+	display: block; width: 45px; margin: 12.5px;
+	background: #A1A1A1;
+	border: 2px solid #444444; border-radius: 32px;
+	position: absolute; top: 0; bottom: 0; right: 126px;
+	-moz-transition: all 0.3s ease-in 0s; -webkit-transition: all 0.3s ease-in 0s;
+	-o-transition: all 0.3s ease-in 0s; transition: all 0.3s ease-in 0s;
+}
+.onoffswitch-checkbox:checked + .onoffswitch-label .onoffswitch-inner {
+	margin-left: 0;
+}
+.onoffswitch-checkbox:checked + .onoffswitch-label .onoffswitch-switch {
+	right: 0px;
+	background-color: #EEEEEE;
+}
+
+* {font-family:Arial}
+body {
+	padding:0px;margin:0px;
+	padding-bottom:20px;
+	border:2px solid #222233; 
+	border-radius: 5px 5px 5px 5px; box-shadow: 3px 3px 3px 0px #222233;
+	background: #222233; /* Old browsers */
+	background: -moz-linear-gradient(top, #222233 0%, #484858 100%); /* FF3.6+ */
+	background: -webkit-gradient(linear, left top, left bottom, color-stop(0%,#222233), color-stop(100%,#484858)); /* Chrome,Safari4+ */
+	background: -webkit-linear-gradient(top, #222233 0%,#484858 100%); /* Chrome10+,Safari5.1+ */
+	background: linear-gradient(to bottom, #222233 0%,#484858 100%); /* W3C */
+	min-height:500px
+}	
+h1,h2 {color:#dddddd}
+#connectionStatus {position:absolute;right:0;padding:10px;color:#dddddd;font-weight:bold;display:none}
+#main{padding-top:30px;}
+#debugDiv{color:#dddddd;font-family:Courier;height:100px;overflow:auto;display:none}
+</style>
+</head>
+<body>
+<pre id="debugDiv"></pre>
+<div id="connectionStatus">
+<div id="connectionStatusOnline">Online <img class="connectionStatus" id="connectionStatusOnlineImg" src="Status-user-online-icon.png"></div>
+<div id="connectionStatusOffline">Offline <img class="connectionStatus" id="connectionStatusOfflineImg" src="Status-user-offline-icon.png"></div>
+</div>
+<div id="main" align="center">
+<h1>Control de iluminación</h1>
+<div id="switchesContainer"></div>
+</div>
+
+</body>
+</html>
