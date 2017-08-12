@@ -6,6 +6,7 @@ use JSON::Parse 'parse_json';
 use WWW::Curl::Easy;
 
 my $config = plugin 'Config';
+my ($change, $activeConnections);
 
 Device::BCM2835::init() || die "Could not init library";
 
@@ -16,6 +17,12 @@ my @pinNames=(undef,
  "RPI_GPIO_P1_22", "RPI_GPIO_P1_07");
 
 app->plugin('Config');
+
+helper 'corsHeader' => sub {
+	my $c = shift;
+	$c->res->headers->header('Access-Control-Allow-Origin' => '*');
+};
+
 
 get '/' => sub {
 	my $c = shift;
@@ -46,21 +53,38 @@ get '/:operation/:pinNumber' => [operation => ['on', 'off'], pinNumber => qr/\d+
 	} else {
 		pinL($pinNumber);
 	}
-	my $output=readAllPins();
+	my $output=readAllSystems();
+
+	$change=$output;
+	$activeConnections=flagClients($activeConnections);
+	$c->corsHeader;
 	$c->render(json => $output);
 };
 
 get '/allOn' => sub {
 	my $c = shift;
 	allPinsOn();
-	my $output=readAllPins();	
+	my $output=readAllSystems();
+	$change=$output;
+	$activeConnections=flagClients($activeConnections);
+	$c->corsHeader;
 	$c->render(json => $output);
 };
 
 get '/allOff' => sub {
 	my $c = shift;
 	allPinsOff();
+	my $output=readAllSystems();
+	$change=$output;
+	$activeConnections=flagClients($activeConnections);
+	$c->corsHeader;
+	$c->render(json => $output);
+};
+
+get '/status' => sub {
+	my $c = shift;
 	my $output=readAllPins();	
+	$c->corsHeader;
 	$c->render(json => $output);
 };
 
@@ -69,6 +93,7 @@ get '/info' => sub {
 	my $infoOutput;
 	$infoOutput->{localSystem}=$config->{localSystem};
 	$infoOutput->{remoteSystems}=$config->{remoteSystems};
+	$c->corsHeader;
 	$c->respond_to(
 	     json => {json => $infoOutput},
 	     html => {template => "info", infoOutput => $infoOutput},
@@ -98,12 +123,54 @@ get '/remote/:remoteName/:operation/:pinNumber' => [operation => ['on', 'off'], 
 	# Return a 500 error if the remote request did not go well
 	return $c->reply->exception($output)
 		unless($result==0);
+
+	$output=readAllSystems();	
+	$change = $output;
+	$activeConnections=flagClients($activeConnections);
+	$c->corsHeader;
 	$c->render(json => $output);
 };
 
 
-app->start;
+get '/statusAll' => sub {
+	my $c = shift;
+	my $output=readAllSystems();	
+	$c->corsHeader;
+	$c->render(json => $output);
+};
 
+
+#############################
+# Websockets routes
+#############################
+websocket '/realTime' => sub {
+	my $c = shift;
+	$c->inactivity_timeout(3600);
+
+	$c->on( message => sub {
+		my $connection = $c->tx->connection;
+		$activeConnections->{$connection}->{changed}=0;
+		$c->send({ json => $change }) ;
+	});
+
+
+  	my $timer = Mojo::IOLoop->recurring( 1 => sub {
+		if ($change) {
+			my $connection = $c->tx->connection;
+			if ($activeConnections->{$connection}->{toChange}){
+				$c->send({ json => $change });
+				$activeConnections->{$connection}->{toChange}=0;			
+			}
+		}
+	});
+
+	$c->on( finish => sub {
+		Mojo::IOLoop->remove($timer);
+	});
+
+};
+
+app->start;
 
 
 ###############################################################################################
@@ -133,20 +200,20 @@ sub pinL {
 }
 
 sub readAllPins {
-	my @output;
+	my $output;
 	for my $pinNumber (1..8) {
 		my $pinOutput;
 		$pinOutput->{pin}=$pinNumber;
 		$pinOutput->{status}=pinRead($pinNumber);
-		push(@output,$pinOutput);
+		$output->{$pinNumber}=$pinOutput;
 	}
-	return \@output;
+	return $output;
 }
 
 sub readAllRemotePins {
 	my $remoteName = shift;
 	my $remoteAddress = $config->{remoteSystems}->{$remoteName}->{address};
-	my $remoteUrl = $remoteAddress;
+	my $remoteUrl = $remoteAddress."/status";
 	
 	my $responseBody;
 
@@ -171,6 +238,26 @@ sub readAllRemotePins {
 	my $jsonOutput = parse_json($responseBody);
 	return (0,$jsonOutput);
 }
+
+sub readAllSystems {
+	my $outputAll;
+	
+	# Read local pins
+	my $localOutput=readAllPins();
+	$outputAll->{"local"}=$localOutput;
+
+	# Read all remote systems	
+	my @remoteSystemsNames = keys($config->{remoteSystems});
+	
+	foreach my $remoteName (@remoteSystemsNames) {
+		my ($error, $output) = readAllRemotePins($remoteName);
+		return(1,"Error in remote system $remoteName: $error")
+			unless ($error == 0);
+		$outputAll->{$remoteName}=$output;
+	}
+	return (0,$outputAll);
+}
+
 
 sub remotePinH {
 	my $remoteName=shift;
@@ -259,6 +346,14 @@ sub setPinAsInput {
 	Device::BCM2835::gpio_fsel(eval('&Device::BCM2835::'.$pinName),&Device::BCM2835::BCM2835_GPIO_FSEL_INPT);
 	return;	
 }
+
+sub flagClients {
+	my $activeConnections = shift;
+	foreach my $connection (keys $activeConnections) {
+		$activeConnections->{$connection}->{toChange}=1;
+	}
+	return($activeConnections);
+};
  
 __DATA__
 
