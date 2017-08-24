@@ -1,26 +1,97 @@
-<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
-<title>Control de Iluminación</title>
+<title>Domolin</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <meta charset="utf-8" />
 <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
 <script>
 
-var mainUrl="http://192.168.1.17:3000";
-var wsUrl="ws://192.168.1.17:3000/realTime";
+var mainUrl;
+var wsUrl;
 
 var onlineStatus= false;
 
 $(function(){
-	loadStatus();
-	ws(wsUrl);
-	
+	loadUrls();
+
 	$('#connectionStatus').click(function() {
-		if (onlineStatus == false) 	ws(wsUrl);
+		if (onlineStatus == false) 	{
+			$("#switchesContainer").html('');
+			loadUrls();
+		}
 	});
+
+	$("#configMenu").click(function(){
+		$("#configDiv").slideToggle();
+	});
+
+	$("#configSave").click(function(){
+		var hostInputVal = $("#hostInput").val();
+		var portInputVal = $("#portInput").val();
+		setCookie('hostCookie',hostInputVal,10000);
+		setCookie('portCookie',portInputVal,10000);
+		$("#configDiv").slideToggle();
+		$("#switchesContainer").html('');
+		loadUrls();
+	});
+
 });
 
+function loadUrls(){
+	var urls =  initConfig();
+	mainUrl = urls.mainUrl;
+	wsUrl = urls.wsUrl;
+	if (urls.error != true) {
+		loadStatus();
+	}
+}
+
+function initConfig(){		
+	var host=readCookie('hostCookie');	
+	var port=readCookie('portCookie');
+	$("#errorDiv").slideUp();		
+	
+	if ((host == '')||(port == '')) {
+		$("#errorDiv").html("<img src='errorIcon.png' /> No hay ningún host y/o puerto guardados. Por favor, vaya al menú de configuración")
+		$("#errorDiv").slideDown();		
+		return {
+			error: true,
+		}
+	}
+
+	$("#hostInput").val(host);
+	$("#portInput").val(port);
+	mainUrl="http://" + host + ":" + port;
+	wsUrl="ws://" + host + ":" + port + "/realTime";
+	return {
+		mainUrl: mainUrl,
+		wsUrl: wsUrl
+	};
+}
+
+function setCookie(cname, cvalue, exdays) {
+    var d = new Date();
+    d.setTime(d.getTime() + (exdays*24*60*60*1000));
+    var expires = "expires="+ d.toUTCString();
+    document.cookie = cname + "=" + cvalue + ";" + expires + ";path=/";
+}
+
+function readCookie(cname) {
+    var name = cname + "=";
+    var decodedCookie = decodeURIComponent(document.cookie);
+    var ca = decodedCookie.split(';');
+    for(var i = 0; i <ca.length; i++) {
+        var c = ca[i];
+        while (c.charAt(0) == ' ') {
+            c = c.substring(1);
+        }
+        if (c.indexOf(name) == 0) {
+            return c.substring(name.length, c.length);
+        }
+    }
+    return "";
+}
 
 function ws(url){
 	var ws = new WebSocket( url );
@@ -53,7 +124,6 @@ function changeSwitchWs(switchDetails){
 		for (pinNumber in systemObj) {
 			var switchObj = systemObj[pinNumber];
 			var switchId = systemName + "_switch" + pinNumber;
-			console.log(switchId + " " + switchObj.status);
 			if (switchObj.status) {
 				$("#" + switchId).prop('checked',true);
 			} else {
@@ -70,9 +140,17 @@ function loadStatus() {
 		url: url,
 		dataType: 'json',
 		success: function(data){
+			if (data.error) {
+				$("#errorDiv").html("<img src='errorIcon.png' /> No se ha podido cargar la configuración. Error: " + data.error);
+				$("#errorDiv").slideDown();
+				return;
+			} 
 			drawSwitches(data);
+			ws(wsUrl);
 		},
 		error: function(data){
+			$("#errorDiv").html("<img src='errorIcon.png' /> No se ha podido cargar la configuración. Error: " + data.statusText);
+			$("#errorDiv").slideDown();		
 		},
 		complete: function() {
 		}
@@ -101,7 +179,8 @@ function drawSwitches(switchesStatus) {
 			} 
 		},
 		error: function(data){
-			alert("Ha habido un error");
+			$("#errorDiv").html("<img src='errorIcon.png' /> No se ha podido cargar la configuración. Error: " + data.error);
+			$("#errorDiv").slideDown();		
 		},
 		complete: function() {
 		}
@@ -141,10 +220,10 @@ function changeSwitch(system,pinNumber,switchId) {
 		url: url,
 		dataType: 'json',
 		success: function(data){
-//			console.log(data);
 		},
 		error: function(data){
-//			console.log(data);
+			$("#errorDiv").html("<img src='errorIcon.png' /> Error: " + JSON.stringify(data));
+			$("#errorDiv").slideDown();		
 		},
 		complete: function() {
 		}
@@ -216,18 +295,32 @@ body {
 	min-height:500px
 }	
 h1,h2 {color:#dddddd}
-#connectionStatus {position:absolute;right:0;padding:10px;color:#dddddd;font-weight:bold;display:none}
+#configDiv {padding:10px;color:#dddddd;font-weight:bold;background-color:#686878;margin-top:30px;display:none}
+#configMenu {position:absolute;left:0;margin:5px;color:#dddddd;font-weight:bold;background-image:url('configIcon2.png'); background-repeat: no-repeat;width:40px; height:40px;cursor: pointer}
+#configMenu img {padding:5px;}
+#connectionStatus {position:absolute;right:0;padding:10px;color:#dddddd;font-weight:bold;display:none;cursor: pointer}
 #main{padding-top:30px;}
+#errorDiv{color:White;background-color:#dc0000;font-family:Arial;font-weight:bold;text-align: center;padding:10px;display:none}
 #debugDiv{color:#dddddd;font-family:Courier;height:100px;overflow:auto;display:none}
 </style>
 </head>
 <body>
 <pre id="debugDiv"></pre>
+<div id="errorDiv"></div>
+
+<div id="configMenu"></div>
+
 <div id="connectionStatus">
-<div id="connectionStatusOnline">Online <img class="connectionStatus" id="connectionStatusOnlineImg" src="Status-user-online-icon.png"></div>
-<div id="connectionStatusOffline">Offline <img class="connectionStatus" id="connectionStatusOfflineImg" src="Status-user-offline-icon.png"></div>
+<div id="connectionStatusOnline">Online <img class="connectionStatus" id="connectionStatusOnlineImg" src="Status-user-online-icon.png" /></div>
+<div id="connectionStatusOffline">Offline <img class="connectionStatus" id="connectionStatusOfflineImg" src="Status-user-offline-icon.png" /></div>
 </div>
+
 <div id="main" align="center">
+<div id="configDiv">
+	<p>Host: <input id="hostInput" type="text"></p>
+	<p>Puerto: <input id="portInput" type="text"></p>
+	<p><input id="configSave" type="button" value="Guardar"></p>
+</div>
 <h1>Control de iluminación</h1>
 <div id="switchesContainer"></div>
 </div>

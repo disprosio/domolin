@@ -4,6 +4,7 @@ use Mojolicious::Lite;
 use Device::BCM2835;
 use JSON::Parse 'parse_json';
 use WWW::Curl::Easy;
+use Data::Dumper;
 
 my $config = plugin 'Config';
 my ($change, $activeConnections);
@@ -18,11 +19,11 @@ my @pinNames=(undef,
 
 app->plugin('Config');
 
-helper 'corsHeader' => sub {
+# Global logic shared by all routes to send a cors header by dfault
+under sub {
 	my $c = shift;
 	$c->res->headers->header('Access-Control-Allow-Origin' => '*');
 };
-
 
 get '/' => sub {
 	my $c = shift;
@@ -43,8 +44,8 @@ get '/:operation/:pinNumber' => [operation => ['on', 'off'], pinNumber => qr/\d+
         my $pinNumber = $c->param('pinNumber');
         my $operation = $c->param('operation');
 
-	# Check that the pinNumber is valid and throw a 500 error if not
-	return $c->reply->exception("Error: The pin number $pinNumber is not available")
+	# Check that the pinNumber is valid and return the error if not
+	return $c->render(json => {error=> "The pin number $pinNumber is not available"})
 		unless ($pinNames[$pinNumber]);
 	
 	setPinAsOutput($pinNumber);
@@ -56,8 +57,8 @@ get '/:operation/:pinNumber' => [operation => ['on', 'off'], pinNumber => qr/\d+
 	my $output=readAllSystems();
 
 	$change=$output;
+	$c->app->log->info("Action $operation on pin $pinNumber of local system from ". $c->tx->original_remote_address);
 	$activeConnections=flagClients($activeConnections);
-	$c->corsHeader;
 	$c->render(json => $output);
 };
 
@@ -67,7 +68,6 @@ get '/allOn' => sub {
 	my $output=readAllSystems();
 	$change=$output;
 	$activeConnections=flagClients($activeConnections);
-	$c->corsHeader;
 	$c->render(json => $output);
 };
 
@@ -77,14 +77,12 @@ get '/allOff' => sub {
 	my $output=readAllSystems();
 	$change=$output;
 	$activeConnections=flagClients($activeConnections);
-	$c->corsHeader;
 	$c->render(json => $output);
 };
 
 get '/status' => sub {
 	my $c = shift;
 	my $output=readAllPins();	
-	$c->corsHeader;
 	$c->render(json => $output);
 };
 
@@ -93,7 +91,6 @@ get '/info' => sub {
 	my $infoOutput;
 	$infoOutput->{localSystem}=$config->{localSystem};
 	$infoOutput->{remoteSystems}=$config->{remoteSystems};
-	$c->corsHeader;
 	$c->respond_to(
 	     json => {json => $infoOutput},
 	     html => {template => "info", infoOutput => $infoOutput},
@@ -110,8 +107,8 @@ get '/remote/:remoteName/:operation/:pinNumber' => [operation => ['on', 'off'], 
 	my $operation = $c->param('operation');
         my $pinNumber = $c->param('pinNumber');
 
-	# Check that the remoteName is valid and throw a 500 error if not
-        return $c->reply->exception("Error: The remote system $remoteName is not available")
+	# Check that the remoteName is valid and return errors if not
+	return $c->render(json => {error=> "The remote system $remoteName is not available"})
 		unless($config->{remoteSystems}->{$remoteName});
 	
 	my ($result,$output);
@@ -121,22 +118,24 @@ get '/remote/:remoteName/:operation/:pinNumber' => [operation => ['on', 'off'], 
 		($result,$output)=remotePinL($remoteName,$pinNumber);
         }
 	# Return a 500 error if the remote request did not go well
-	return $c->reply->exception($output)
+	return $c->render(json => {error=> "The remote system $remoteName returned the error $output"})
 		unless($result==0);
 
 	$output=readAllSystems();	
+	$c->app->log->info("Action $operation on pin $pinNumber of remote system $remoteName");
 	$change = $output;
 	$activeConnections=flagClients($activeConnections);
-	$c->corsHeader;
 	$c->render(json => $output);
 };
 
 
 get '/statusAll' => sub {
 	my $c = shift;
-	my $output=readAllSystems();	
-	$c->corsHeader;
-	$c->render(json => $output);
+	my ($error,$output)=readAllSystems();	
+	if ($error) {
+		$output = {error=> $output};
+	}
+	$c->render(json => $output);	
 };
 
 
@@ -149,6 +148,9 @@ websocket '/realTime' => sub {
 
 	$c->on( message => sub {
 		my $connection = $c->tx->connection;
+		my $remoteIp=$c->tx->remote_address;
+		my $userAgent = $c->tx->req->headers->user_agent;
+  		$c->app->log->info("New connection $connection from $remoteIp $userAgent");
 		$activeConnections->{$connection}->{changed}=0;
 		$c->send({ json => $change }) ;
 	});
@@ -157,14 +159,25 @@ websocket '/realTime' => sub {
   	my $timer = Mojo::IOLoop->recurring( 1 => sub {
 		if ($change) {
 			my $connection = $c->tx->connection;
+	  		$c->app->log->debug("There is a change:". Dumper($change));
 			if ($activeConnections->{$connection}->{toChange}){
+		  		$c->app->log->debug("Sending change to $connection");
 				$c->send({ json => $change });
 				$activeConnections->{$connection}->{toChange}=0;			
 			}
+	  		$c->app->log->debug("Active connections: ". Dumper($activeConnections));
+			my $newChange=0;
+			foreach my $activeConn (keys(%{$activeConnections})) {
+				$newChange+=$activeConnections->{$activeConn}->{toChange};
+			}
+			undef($change) if ($newChange==0);
 		}
 	});
 
 	$c->on( finish => sub {
+		my $connection = $c->tx->connection;
+		my $remoteIp=$c->tx->original_remote_address;
+  		$c->app->log->info("Removing connection $connection from $remoteIp");
 		Mojo::IOLoop->remove($timer);
 	});
 
@@ -247,13 +260,14 @@ sub readAllSystems {
 	$outputAll->{"local"}=$localOutput;
 
 	# Read all remote systems	
-	my @remoteSystemsNames = keys($config->{remoteSystems});
-	
-	foreach my $remoteName (@remoteSystemsNames) {
-		my ($error, $output) = readAllRemotePins($remoteName);
-		return(1,"Error in remote system $remoteName: $error")
-			unless ($error == 0);
-		$outputAll->{$remoteName}=$output;
+	if ($config->{remoteSystems}) {
+		my @remoteSystemsNames = keys($config->{remoteSystems});
+		foreach my $remoteName (@remoteSystemsNames) {
+			my ($error, $output) = readAllRemotePins($remoteName);
+			return(1,$output)
+				unless ($error == 0);
+			$outputAll->{$remoteName}=$output;
+		}		
 	}
 	return (0,$outputAll);
 }
@@ -349,7 +363,7 @@ sub setPinAsInput {
 
 sub flagClients {
 	my $activeConnections = shift;
-	foreach my $connection (keys $activeConnections) {
+	foreach my $connection (keys %{$activeConnections}) {
 		$activeConnections->{$connection}->{toChange}=1;
 	}
 	return($activeConnections);
