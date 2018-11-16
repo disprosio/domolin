@@ -261,7 +261,7 @@ sub readAllSystems {
 
 	# Read all remote systems	
 	if ($config->{remoteSystems}) {
-		my @remoteSystemsNames = keys($config->{remoteSystems});
+		my @remoteSystemsNames = keys %{$config->{remoteSystems}};
 		foreach my $remoteName (@remoteSystemsNames) {
 			my ($error, $output) = readAllRemotePins($remoteName);
 			return(1,$output)
